@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rules:
+    # The backend rules and the UI drift checks. No dependencies, no Google
+    # account -- Code.gs runs against the in-memory fakes in test/stubs.js.
+    name: rules and UI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: sh test/run.sh
+
+  layout:
+    # Reports but does not gate: the probe waits a fixed 1.6s for the preview to
+    # render, which is a timing assumption a loaded runner can miss. A red mark
+    # here is worth reading, not worth blocking a merge on.
+    name: phone layout (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh test/layout-check.sh
