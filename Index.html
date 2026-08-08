@@ -1,0 +1,1456 @@
+<!--
+  Team Task Tracker — single-page UI served by doGet().
+
+  No external assets: Apps Script serves this file inline, so everything here is
+  self-contained (icons are inline SVG, styles are one token-driven sheet).
+
+  Layout is mobile-first. Under 720px the tab bar sits at the bottom within thumb
+  reach and dialogs open as bottom sheets; above it the same nav becomes a tab
+  strip and dialogs become centred cards. Only CSS changes — never the markup.
+
+  Structure below: STYLES · MARKUP · SCRIPT (helpers → api → state → views →
+  dialogs → boot).
+-->
+<style>
+  /* ------------------------------------------------------------- design tokens */
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --line: #e3e6eb;
+    --line-soft: #eceff3;
+    --ink: #14171c;
+    --dim: #626b78;
+    --faint: #98a1af;
+
+    --accent: #2563eb;
+    --accent-ink: #ffffff;
+    --accent-soft: #e8effd;
+
+    --critical: #d92d20;
+    --high: #e07b13;
+    --medium: #2563eb;
+    --low: #8a94a3;
+    --ok: #12805c;
+    --warn: #b25e09;
+
+    --radius: 14px;
+    --radius-sm: 10px;
+    --radius-pill: 999px;
+    --shadow-1: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .04);
+    --shadow-2: 0 12px 32px rgba(16, 24, 40, .18);
+    --tap: 44px;
+    --nav-h: 60px;
+    --ease: cubic-bezier(.32, .72, 0, 1);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0f13;
+      --surface: #15181e;
+      --surface-2: #1c2027;
+      --line: #272c35;
+      --line-soft: #20242b;
+      --ink: #e7eaef;
+      --dim: #9aa4b2;
+      --faint: #6b7684;
+
+      --accent: #5b8cf5;
+      --accent-ink: #0b0d11;
+      --accent-soft: #1a2438;
+
+      --critical: #f87171;
+      --high: #e59a4a;
+      --medium: #5b8cf5;
+      --low: #7d8794;
+      --ok: #45b98a;
+      --warn: #d79b4a;
+
+      --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+      --shadow-2: 0 12px 32px rgba(0, 0, 0, .55);
+    }
+  }
+
+  /* -------------------------------------------------------------------- reset */
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button, input, select, textarea { font: inherit; color: inherit; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  svg { display: block; flex: none; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .hide { display: none !important; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
+
+  /* ------------------------------------------------------------------- shell */
+  .app { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--bg);                                  /* fallback first */
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: saturate(1.6) blur(12px);
+    border-bottom: 1px solid var(--line-soft);
+    padding-top: env(safe-area-inset-top);
+  }
+  .topbar-in {
+    display: flex; align-items: center; gap: 10px;
+    max-width: 760px; margin: 0 auto; padding: 10px 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+  .logo {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    background: var(--accent); color: var(--accent-ink);
+    display: grid; place-items: center;
+  }
+  .brand h1 { font-size: 16px; letter-spacing: -.01em; }
+
+  main {
+    flex: 1; width: 100%; max-width: 760px; margin: 0 auto;
+    padding: 0 16px calc(var(--nav-h) + 88px + env(safe-area-inset-bottom));
+  }
+
+  /* --------------------------------------------------------------------- nav */
+  .nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    display: flex; background: var(--surface);
+    border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .nav button {
+    flex: 1; min-height: var(--nav-h);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    background: none; border: 0; cursor: pointer;
+    font-size: 11px; font-weight: 500; color: var(--dim);
+  }
+  .nav button[aria-selected="true"] { color: var(--accent); }
+  .nav button:active { background: var(--surface-2); }
+
+  @media (min-width: 720px) {
+    .topbar { order: 1; }
+    .nav { order: 2; }
+    main { order: 3; padding-bottom: 64px; }
+
+    .nav {
+      position: static; max-width: 760px; margin: 0 auto; width: 100%;
+      gap: 4px; padding: 0 16px;
+      background: none; border-top: 0; border-bottom: 1px solid var(--line-soft);
+    }
+    .nav button {
+      flex: none; min-height: 0; flex-direction: row; gap: 7px;
+      padding: 11px 12px; font-size: 13.5px;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .nav button[aria-selected="true"] { border-bottom-color: var(--accent); }
+    .nav button:active { background: none; }
+
+    /* On a phone the scope control earns the full width; on a wide screen that
+       just spreads three short labels across the page. */
+    .control-row { justify-content: space-between; }
+    .segmented { flex: 0 1 auto; }
+  }
+
+  /* ---------------------------------------------------------------- controls */
+  .controls { padding: 14px 0 10px; display: grid; gap: 10px; }
+
+  .searchbar {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 0 12px; min-height: var(--tap);
+    box-shadow: var(--shadow-1);
+  }
+  .searchbar:focus-within { border-color: var(--accent); }
+  .searchbar svg { color: var(--faint); }
+  .searchbar input {
+    flex: 1; min-width: 0; border: 0; background: none; outline: none;
+    padding: 11px 0; font-size: 15px;
+  }
+  .searchbar input::-webkit-search-cancel-button { display: none; }
+
+  .control-row { display: flex; gap: 8px; align-items: stretch; }
+
+  .segmented {
+    display: flex; flex: 1; gap: 2px; padding: 3px;
+    background: var(--surface-2); border-radius: var(--radius-sm);
+  }
+  .segmented button {
+    flex: 1; padding: 8px 6px; border: 0; border-radius: 8px;
+    background: none; color: var(--dim); cursor: pointer;
+    font-size: 13.5px; font-weight: 500; white-space: nowrap;
+  }
+  .segmented button[aria-selected="true"] {
+    background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1);
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 8px 5px 10px; border-radius: var(--radius-pill);
+    background: var(--accent-soft); color: var(--accent);
+    border: 0; font-size: 12.5px; font-weight: 500; cursor: pointer;
+  }
+  .chip svg { width: 13px; height: 13px; }
+
+  .count { font-size: 12.5px; color: var(--faint); padding: 2px 0 10px; }
+
+  /* -------------------------------------------------------------------- misc */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: var(--tap); padding: 10px 16px;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    font-size: 14.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  }
+  .btn:active { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.danger { color: var(--critical); border-color: transparent; background: none; }
+  .btn.ghost { border-color: transparent; background: none; color: var(--dim); }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  .icon-btn {
+    display: grid; place-items: center; flex: none;
+    width: var(--tap); height: var(--tap); padding: 0;
+    background: none; border: 0; border-radius: var(--radius-sm);
+    color: var(--dim); cursor: pointer; position: relative;
+  }
+  .icon-btn:active { background: var(--surface-2); }
+  .icon-btn.bordered { border: 1px solid var(--line); background: var(--surface); }
+
+  .badge {
+    position: absolute; top: 5px; right: 4px;
+    min-width: 17px; height: 17px; padding: 0 4px;
+    border-radius: var(--radius-pill);
+    background: var(--accent); color: var(--accent-ink);
+    font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+  }
+
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex: none;
+    border: 0; padding: 0; display: grid; place-items: center;
+    font-size: 12px; font-weight: 600; color: #fff; letter-spacing: .02em;
+  }
+  .avatar.sm { width: 22px; height: 22px; font-size: 9.5px; }
+
+  .banner {
+    display: flex; gap: 10px; align-items: flex-start;
+    background: var(--accent-soft); color: var(--ink);
+    border-radius: var(--radius); padding: 12px 14px;
+    font-size: 13.5px; margin-bottom: 12px;
+  }
+  .banner svg { color: var(--accent); margin-top: 2px; }
+
+  /* ------------------------------------------------------------------- tasks */
+  /* minmax(0, 1fr), not the default `auto`: a grid item's automatic minimum is
+     its min-content width, and the nowrap .snip below would push every card out
+     to the full width of its one-line summary — a sideways-scrolling phone. */
+  .list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+
+  .task {
+    position: relative; display: flex; gap: 11px; align-items: flex-start;
+    width: 100%; min-width: 0; text-align: left;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 13px 14px 13px 16px;
+    box-shadow: var(--shadow-1); cursor: pointer;
+    transition: border-color .15s, transform .15s var(--ease);
+  }
+  .task::before {
+    content: ""; position: absolute; left: 0; top: 12px; bottom: 12px;
+    width: 3px; border-radius: 0 3px 3px 0; background: var(--pri, var(--low));
+  }
+  .task:hover { border-color: var(--line); }
+  .task:active { transform: scale(.994); }
+  .task.closed { background: none; box-shadow: none; }
+  .task.closed .title { color: var(--dim); text-decoration: line-through; }
+
+  .p-Critical { --pri: var(--critical); }
+  .p-High     { --pri: var(--high); }
+  .p-Medium   { --pri: var(--medium); }
+  .p-Low      { --pri: var(--low); }
+
+  .task .body { flex: 1; min-width: 0; }
+  .task .title { font-weight: 550; letter-spacing: -.005em; overflow-wrap: anywhere; }
+  .task .snip {
+    font-size: 13px; color: var(--dim); margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .task .meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin-top: 9px; font-size: 12px; color: var(--dim);
+  }
+  .task .who { display: inline-flex; align-items: center; gap: 6px; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: var(--radius-pill);
+    background: var(--surface-2); color: var(--dim);
+    font-size: 11.5px; font-weight: 500;
+  }
+  .pill svg { width: 12px; height: 12px; }
+  /* --pri comes from the .p-<Priority> class alongside, so the priority word is
+     tinted without hard-coding a second list of priorities here. */
+  .pill.pri { color: var(--pri, var(--dim)); }
+  /* Tinted pills. The flat var() line is the fallback where color-mix is absent. */
+  .pill.s-progress { background: var(--accent-soft); color: var(--accent); }
+  .pill.s-blocked, .pill.due-over { color: var(--critical); }
+  .pill.s-done { color: var(--ok); }
+  .pill.due-soon { color: var(--warn); }
+  .pill.s-blocked, .pill.due-over { background: color-mix(in srgb, var(--critical) 14%, transparent); }
+  .pill.s-done   { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .pill.due-soon { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+
+  .dot-sep { color: var(--faint); }
+
+  .list-foot { padding: 16px 0; text-align: center; }
+
+  .skel { display: grid; gap: 8px; }
+  .skel-row {
+    height: 88px; border-radius: var(--radius);
+    background: linear-gradient(100deg, var(--surface) 30%, var(--surface-2) 50%, var(--surface) 70%);
+    background-size: 240% 100%; animation: shimmer 1.3s infinite linear;
+    border: 1px solid var(--line-soft);
+  }
+  @keyframes shimmer { from { background-position: 130% 0; } to { background-position: -30% 0; } }
+
+  .empty { padding: 56px 20px; text-align: center; color: var(--dim); }
+  .empty svg { margin: 0 auto 12px; color: var(--faint); }
+  .empty p { margin: 0; font-size: 14px; }
+  .empty .lead { color: var(--ink); font-weight: 550; font-size: 15px; margin-bottom: 3px; }
+
+  /* -------------------------------------------------------------------- team */
+  .node {
+    display: flex; align-items: center; gap: 11px;
+    padding: 11px 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .node .n { font-weight: 500; }
+  .node .e { font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+  .node.off { opacity: .55; }
+  .node.off .n { font-weight: 400; }
+  .node .rail { flex: none; color: var(--faint); font-size: 12px; }
+
+  .subhead {
+    font-size: 11.5px; font-weight: 600; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .05em; padding: 22px 0 6px;
+  }
+  .hint { font-size: 12.5px; color: var(--dim); padding-bottom: 10px; }
+
+  /* ---------------------------------------------------------------- activity */
+  .act { display: flex; gap: 11px; padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+  .act .body { flex: 1; min-width: 0; }
+  .act .line { font-size: 13.5px; }
+  .act .line b { font-weight: 550; }
+  .act .t { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .act .sum { font-size: 12.5px; color: var(--dim); margin-top: 3px; overflow-wrap: anywhere; }
+
+  /* --------------------------------------------------------------------- fab */
+  .fab {
+    position: fixed; z-index: 35; right: 16px;
+    bottom: calc(var(--nav-h) + 18px + env(safe-area-inset-bottom));
+    display: inline-flex; align-items: center; gap: 7px;
+    min-height: 52px; padding: 0 20px; border: 0; border-radius: var(--radius-pill);
+    background: var(--accent); color: var(--accent-ink);
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    box-shadow: var(--shadow-2);
+  }
+  .fab:active { transform: scale(.97); }
+  @media (min-width: 720px) { .fab { bottom: 28px; right: 28px; } }
+
+  /* ----------------------------------------------------------------- dialogs */
+  dialog {
+    position: fixed; inset: auto auto 0 50%; transform: translateX(-50%);
+    width: 100%; max-width: 560px;
+    max-height: 88vh; max-height: 88dvh;
+    margin: 0; padding: 0; border: 0;
+    background: var(--surface); color: var(--ink);
+    border-radius: 20px 20px 0 0; box-shadow: var(--shadow-2);
+    overflow: hidden;
+  }
+  dialog::backdrop { background: rgba(8, 10, 14, .5); }
+  dialog[open] { animation: sheet-in .28s var(--ease); }
+  @keyframes sheet-in { from { transform: translate(-50%, 100%); } }
+
+  @media (min-width: 640px) {
+    dialog {
+      inset: 50% auto auto 50%; transform: translate(-50%, -50%);
+      border-radius: var(--radius); max-height: 86vh; max-height: 86dvh;
+    }
+    @keyframes sheet-in { from { transform: translate(-50%, -46%); opacity: 0; } }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    dialog[open] { animation: none; }
+    .task, .fab { transition: none; }
+  }
+
+  .sheet { display: flex; flex-direction: column; max-height: inherit; }
+  .sheet-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 10px 14px 18px; border-bottom: 1px solid var(--line-soft);
+  }
+  .sheet-head h2 { flex: 1; min-width: 0; font-size: 16px; overflow-wrap: anywhere; }
+  .sheet-body {
+    flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 16px 18px; display: grid; gap: 14px;
+  }
+  .sheet-foot {
+    display: flex; gap: 8px; align-items: center;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line-soft); background: var(--surface);
+  }
+  .sheet-foot .spacer { flex: 1; }
+
+  .field { display: grid; gap: 6px; }
+  .field > label { font-size: 12.5px; font-weight: 500; color: var(--dim); }
+  .field-row { display: flex; gap: 10px; }
+  .field-row > * { flex: 1; min-width: 0; }
+
+  input[type="text"], input[type="date"], select, textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px;
+    background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    outline: none; appearance: none;
+  }
+  select {
+    background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+                      linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+    background-position: right 16px center, right 11px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 34px;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  textarea { min-height: 132px; resize: vertical; line-height: 1.55; }
+
+  .switch {
+    display: flex; align-items: center; gap: 12px;
+    min-height: var(--tap); cursor: pointer;
+  }
+  .switch input { position: absolute; opacity: 0; pointer-events: none; }
+  .switch .track {
+    width: 44px; height: 26px; flex: none; border-radius: var(--radius-pill);
+    background: var(--surface-2); border: 1px solid var(--line);
+    position: relative; transition: background .18s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--surface); box-shadow: var(--shadow-1);
+    transition: transform .18s var(--ease);
+  }
+  .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch span { font-size: 14.5px; }
+
+  .stamp { font-size: 12px; color: var(--faint); line-height: 1.6; }
+  .err {
+    font-size: 13.5px; color: var(--critical);
+    background: var(--surface-2);
+    background: color-mix(in srgb, var(--critical) 10%, transparent);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+  }
+  .detail-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .detail-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; }
+  .detail-body.none { color: var(--faint); font-style: italic; }
+
+  /* ------------------------------------------------------------------ toasts */
+  .toasts {
+    position: fixed; z-index: 60; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--nav-h) + 80px + env(safe-area-inset-bottom));
+    display: grid; gap: 8px; width: max-content; max-width: calc(100vw - 32px);
+    pointer-events: none;
+  }
+  @media (min-width: 720px) { .toasts { bottom: 28px; } }
+  .toast {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--ink); color: var(--bg);
+    padding: 11px 16px; border-radius: var(--radius-pill);
+    font-size: 13.5px; font-weight: 500; box-shadow: var(--shadow-2);
+    animation: toast-in .24s var(--ease);
+  }
+  .toast.bad { background: var(--critical); color: #fff; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-in">
+      <div class="brand">
+        <span class="logo" id="logo"></span>
+        <h1>Team Tasks</h1>
+      </div>
+      <button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh"></button>
+      <button class="avatar" id="me-chip" title="" aria-label="Signed in"></button>
+    </div>
+  </header>
+
+  <nav class="nav" role="tablist" aria-label="Sections" id="nav"></nav>
+
+  <main>
+    <section class="view" id="view-tasks" role="tabpanel" aria-label="Tasks">
+      <div id="notice"></div>
+
+      <div class="controls">
+        <div class="searchbar">
+          <span id="search-icon"></span>
+          <input type="search" id="q" placeholder="Search tasks, people, notes…"
+                 autocomplete="off" aria-label="Search tasks">
+          <button class="icon-btn hide" id="q-clear" style="width:32px;height:32px"
+                  aria-label="Clear search"></button>
+        </div>
+
+        <div class="control-row">
+          <div class="segmented" role="tablist" aria-label="Whose tasks" id="scope">
+            <button role="tab" data-scope="mine" aria-selected="true">Mine</button>
+            <button role="tab" data-scope="team" aria-selected="false">My team</button>
+            <button role="tab" data-scope="all" aria-selected="false">Everyone</button>
+          </div>
+          <button class="icon-btn bordered" id="filters-open" aria-label="Filters and sorting">
+            <span id="filter-icon"></span>
+            <span class="badge hide" id="filter-count"></span>
+          </button>
+        </div>
+
+        <div class="chips" id="active-chips"></div>
+      </div>
+
+      <div class="count" id="count" aria-live="polite"></div>
+      <div class="list" id="list"></div>
+      <div class="list-foot">
+        <button class="btn hide" id="more">Load more</button>
+      </div>
+    </section>
+
+    <section class="view hide" id="view-team" role="tabpanel" aria-label="Team">
+      <div id="tree"></div>
+    </section>
+
+    <section class="view hide" id="view-activity" role="tabpanel" aria-label="Activity">
+      <div id="acts"></div>
+    </section>
+  </main>
+</div>
+
+<button class="fab hide" id="new"><span id="plus-icon"></span>New task</button>
+
+<!-- create / edit -->
+<dialog id="editor" aria-labelledby="dlg-title">
+  <form class="sheet" id="form" method="dialog">
+    <div class="sheet-head">
+      <h2 id="dlg-title">New task</h2>
+      <button type="button" class="icon-btn" data-close="editor" aria-label="Close"></button>
+    </div>
+    <div class="sheet-body">
+      <div class="field">
+        <label for="f-title">Title</label>
+        <input type="text" id="f-title" maxlength="200" required
+               placeholder="What needs doing?" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="f-details">Details</label>
+        <textarea id="f-details" maxlength="8000"
+                  placeholder="Context, notes, progress…"></textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-assignee">Assigned to</label>
+          <select id="f-assignee"></select>
+        </div>
+        <div class="field">
+          <label for="f-priority">Priority</label>
+          <select id="f-priority"></select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-status">Status</label>
+          <select id="f-status"></select>
+        </div>
+        <div class="field">
+          <label for="f-due">Due date</label>
+          <input type="date" id="f-due">
+        </div>
+      </div>
+      <div class="stamp" id="f-stamp"></div>
+      <div class="err hide" id="f-err" role="alert"></div>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn danger hide" id="f-delete">
+        <span id="trash-icon"></span>Delete
+      </button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" data-close="editor">Cancel</button>
+      <button type="submit" class="btn primary" id="f-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- read-only view -->
+<dialog id="viewer" aria-labelledby="v-title">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="v-title"></h2>
+      <button type="button" class="icon-btn" data-close="viewer" aria-label="Close"></button>
+    </div>
+    <div class="sheet-body">
+      <div class="detail-meta" id="v-meta"></div>
+      <div class="detail-body" id="v-details"></div>
+      <div class="stamp" id="v-stamp"></div>
+    </div>
+    <div class="sheet-foot">
+      <span class="spacer"></span>
+      <button type="button" class="btn" data-close="viewer">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- filters -->
+<dialog id="filters" aria-labelledby="fl-title">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="fl-title">Filter &amp; sort</h2>
+      <button type="button" class="icon-btn" data-close="filters" aria-label="Close"></button>
+    </div>
+    <div class="sheet-body">
+      <div class="field">
+        <label for="fl-priority">Priority</label>
+        <select id="fl-priority"><option value="">Any priority</option></select>
+      </div>
+      <div class="field">
+        <label for="fl-status">Status</label>
+        <select id="fl-status"><option value="">Any status</option></select>
+      </div>
+      <div class="field">
+        <label for="fl-sort">Sort by</label>
+        <select id="fl-sort">
+          <option value="recent">Recently updated</option>
+          <option value="priority">Priority</option>
+        </select>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="fl-hidedone">
+        <span class="track"></span>
+        <span>Hide done &amp; cancelled</span>
+      </label>
+    </div>
+    <div class="sheet-foot">
+      <button type="button" class="btn ghost" id="fl-reset">Reset</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn primary" id="fl-apply">Show results</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- confirm -->
+<dialog id="confirm" aria-labelledby="c-title">
+  <div class="sheet">
+    <div class="sheet-head"><h2 id="c-title">Delete this task?</h2></div>
+    <div class="sheet-body">
+      <p style="margin:0" id="c-text"></p>
+    </div>
+    <div class="sheet-foot">
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="c-no">Keep it</button>
+      <button type="button" class="btn primary" id="c-yes" style="background:var(--critical);border-color:var(--critical);color:#fff">Delete</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* =========================================================== dom helpers */
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  /**
+   * Build an element. `text` always goes through textContent, so task titles,
+   * names and log lines can never be interpreted as markup.
+   */
+  function el(tag, opts, kids) {
+    var node = document.createElement(tag);
+    opts = opts || {};
+    if (opts.className) node.className = opts.className;
+    if (opts.text != null) node.textContent = opts.text;
+    if (opts.icon) node.appendChild(icon(opts.icon));
+    if (opts.attrs) Object.keys(opts.attrs).forEach(function (k) {
+      node.setAttribute(k, opts.attrs[k]);
+    });
+    if (opts.style) node.setAttribute('style', opts.style);
+    if (opts.on) Object.keys(opts.on).forEach(function (ev) {
+      node.addEventListener(ev, opts.on[ev]);
+    });
+    (kids || []).forEach(function (k) { if (k) node.appendChild(k); });
+    return node;
+  }
+
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function text(s) { return document.createTextNode(s); }
+
+  /* ================================================================= icons */
+
+  // Static, trusted markup — the only place innerHTML is used.
+  var PATHS = {
+    check:    '<path d="M4.5 12.5l5 5 10-11"/>',
+    search:   '<circle cx="11" cy="11" r="7"/><path d="M20.5 20.5L16.5 16.5"/>',
+    x:        '<path d="M6 6l12 12M18 6L6 18"/>',
+    sliders:  '<path d="M4 8h9M19 8h1M4 16h3M13 16h7"/><circle cx="16" cy="8" r="2.4"/><circle cx="10" cy="16" r="2.4"/>',
+    plus:     '<path d="M12 5v14M5 12h14"/>',
+    tasks:    '<rect x="3.5" y="4.5" width="17" height="15" rx="3.5"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+    team:     '<circle cx="9.5" cy="8.5" r="3.2"/><path d="M3.5 19.5c0-3 2.7-4.8 6-4.8s6 1.8 6 4.8"/><path d="M16.2 5.8a3.2 3.2 0 010 5.6M17.8 19.5c0-2-.7-3.5-1.9-4.4"/>',
+    activity: '<path d="M3 12.5h3.8l2.7-6.5 4.2 13 2.6-6.5H21"/>',
+    lock:     '<rect x="5" y="11" width="14" height="9" rx="2.4"/><path d="M8.4 11V8.2a3.6 3.6 0 017.2 0V11"/>',
+    calendar: '<rect x="3.5" y="5.5" width="17" height="15" rx="2.8"/><path d="M8.5 3.5v4M15.5 3.5v4M3.5 10.5h17"/>',
+    trash:    '<path d="M4.5 7.5h15M9.5 7.5V5.2h5v2.3M6.5 7.5l1 12.3h9l1-12.3"/>',
+    refresh:  '<path d="M20 12a8 8 0 11-2.6-5.9M20 4v4.5h-4.5"/>',
+    info:     '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.4"/>',
+    inbox:    '<path d="M3.5 13.5h4l1.5 3h6l1.5-3h4"/><path d="M6.5 4.5h11l3.5 9v5a2 2 0 01-2 2h-14a2 2 0 01-2-2v-5z"/>'
+  };
+
+  function icon(name, size) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', size || 20);
+    svg.setAttribute('height', size || 20);
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.7');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.innerHTML = PATHS[name] || '';
+    return svg;
+  }
+
+  /* ============================================================ formatting */
+
+  /** Relative time for anything within the last week, absolute beyond that. */
+  function when(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d)) return String(iso);
+    var mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 1440) return Math.round(mins / 60) + 'h ago';
+    if (mins < 10080) return Math.round(mins / 1440) + 'd ago';
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  function longWhen(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d)) return String(iso);
+    return d.toLocaleString(undefined, {
+      day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+  }
+
+  // Due dates travel as yyyy-MM-dd. `new Date('2026-08-20')` would read that as
+  // UTC midnight and print the day before in western timezones, so build the
+  // date from its parts and keep it local throughout.
+  function dayParts(day) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ''));
+    return m ? { y: +m[1], m: +m[2], d: +m[3] } : null;
+  }
+
+  function dayLabel(day) {
+    var p = dayParts(day);
+    if (!p) return '';
+    var d = new Date(p.y, p.m - 1, p.d);
+    var days = daysUntil(day);
+    if (days === 0) return 'today';
+    if (days === 1) return 'tomorrow';
+    if (days === -1) return 'yesterday';
+    var opts = { day: 'numeric', month: 'short' };
+    if (p.y !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  /** Whole days from today to `day`, negative when overdue. Local calendar. */
+  function daysUntil(day) {
+    var p = dayParts(day);
+    if (!p) return null;
+    var now = new Date();
+    var a = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var b = new Date(p.y, p.m - 1, p.d);
+    return Math.round((b - a) / 86400000);
+  }
+
+  function dateValue(day) { return dayParts(day) ? String(day) : ''; }
+
+  function initials(name) {
+    var parts = String(name || '?').trim().split(/[\s.@_-]+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  }
+
+  /** Stable colour per person, so the same face keeps the same badge. */
+  function hue(seed) {
+    var h = 0;
+    String(seed || '').split('').forEach(function (c) {
+      h = (h * 31 + c.charCodeAt(0)) % 360;
+    });
+    return h;
+  }
+
+  function avatar(email, name, small) {
+    return el('span', {
+      className: 'avatar' + (small ? ' sm' : ''),
+      text: initials(name || email),
+      attrs: { 'aria-hidden': 'true' },
+      style: 'background: hsl(' + hue(email) + ' 42% 44%)'
+    });
+  }
+
+  var STATUS_CLASS = {
+    'In Progress': 's-progress',
+    'Blocked': 's-blocked',
+    'Done': 's-done',
+    'Cancelled': ''
+  };
+
+  /* =================================================================== api */
+
+  /** google.script.run, promise-shaped. */
+  function call(fn, arg) {
+    return new Promise(function (resolve, reject) {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(function (e) {
+          reject(new Error(e && e.message ? e.message : String(e)));
+        })[fn](arg);
+    });
+  }
+
+  /* ================================================================= state */
+
+  var STATE = {
+    boot: null,
+    tab: 'tasks',
+    tasks: [],
+    total: 0,
+    loading: false,
+    reqId: 0,                                    // guards out-of-order responses
+    scope: 'mine',
+    search: '',
+    filters: { priority: '', status: '', sort: 'recent', hideDone: false }
+  };
+
+  var DEFAULTS = { priority: '', status: '', sort: 'recent', hideDone: false };
+
+  function activeFilters() {
+    return Object.keys(DEFAULTS).filter(function (k) {
+      return STATE.filters[k] !== DEFAULTS[k];
+    });
+  }
+
+  function memberName(email) {
+    var found = (STATE.boot.members || []).filter(function (m) {
+      return m.email === email;
+    })[0];
+    return found ? found.name : (email || '—');
+  }
+
+  /* ================================================================ toasts */
+
+  function toast(message, bad) {
+    var node = el('div', { className: 'toast' + (bad ? ' bad' : ''), text: message });
+    $('toasts').appendChild(node);
+    setTimeout(function () {
+      node.style.transition = 'opacity .2s';
+      node.style.opacity = '0';
+      setTimeout(function () { node.remove(); }, 220);
+    }, bad ? 4200 : 2200);
+  }
+
+  /* =============================================================== chrome */
+
+  var TABS = [
+    { id: 'tasks', label: 'Tasks', icon: 'tasks' },
+    { id: 'team', label: 'Team', icon: 'team' },
+    { id: 'activity', label: 'Activity', icon: 'activity' }
+  ];
+
+  function buildChrome() {
+    $('logo').appendChild(icon('check', 16));
+    $('search-icon').appendChild(icon('search', 18));
+    $('filter-icon').appendChild(icon('sliders'));
+    $('plus-icon').appendChild(icon('plus', 18));
+    $('q-clear').appendChild(icon('x', 16));
+    $('refresh').appendChild(icon('refresh', 19));
+    $('trash-icon').appendChild(icon('trash', 17));
+
+    document.querySelectorAll('[data-close]').forEach(function (b) {
+      if (b.classList.contains('icon-btn')) b.appendChild(icon('x', 19));
+      b.addEventListener('click', function () { $(b.dataset.close).close(); });
+    });
+
+    var nav = $('nav');
+    TABS.forEach(function (t) {
+      nav.appendChild(el('button', {
+        attrs: { role: 'tab', 'aria-selected': String(t.id === STATE.tab), 'data-tab': t.id },
+        on: { click: function () { showTab(t.id); } }
+      }, [icon(t.icon, 21), el('span', { text: t.label })]));
+    });
+  }
+
+  function showTab(id) {
+    STATE.tab = id;
+    document.querySelectorAll('[data-tab]').forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.tab === id));
+    });
+    TABS.forEach(function (t) {
+      $('view-' + t.id).classList.toggle('hide', t.id !== id);
+    });
+    syncFab();
+    if (id === 'activity') loadActivity();
+    if (id === 'team') renderTeam();
+    window.scrollTo(0, 0);
+  }
+
+  function syncFab() {
+    var canCreate = STATE.boot && STATE.boot.assignable.length > 0;
+    $('new').classList.toggle('hide', STATE.tab !== 'tasks' || !canCreate);
+  }
+
+  /* ============================================================ task list */
+
+  function fillSelect(sel, values, selected) {
+    values.forEach(function (v) {
+      sel.appendChild(el('option', { text: v, attrs: { value: v } }));
+    });
+    if (selected) sel.value = selected;
+  }
+
+  function query(reset) {
+    return {
+      search: STATE.search,
+      scope: STATE.scope,
+      priority: STATE.filters.priority,
+      status: STATE.filters.status,
+      sort: STATE.filters.sort,
+      hideDone: STATE.filters.hideDone,
+      offset: reset ? 0 : STATE.tasks.length,
+      limit: STATE.boot.pageSize
+    };
+  }
+
+  function loadTasks(reset) {
+    var mine = ++STATE.reqId;
+    STATE.loading = true;
+    $('more').disabled = true;
+    if (reset) renderSkeleton();
+
+    return call('listTasks', query(reset)).then(function (res) {
+      if (mine !== STATE.reqId) return;            // a newer search already won
+      STATE.tasks = reset ? res.tasks : STATE.tasks.concat(res.tasks);
+      STATE.total = res.total;
+      renderTasks();
+    }).catch(function (e) {
+      if (mine !== STATE.reqId) return;
+      clear($('list'));
+      $('count').textContent = '';
+      $('list').appendChild(emptyState('Could not load tasks', e.message, 'info'));
+    }).then(function () {
+      if (mine !== STATE.reqId) return;
+      STATE.loading = false;
+      $('more').disabled = false;
+    });
+  }
+
+  function renderSkeleton() {
+    var list = $('list');
+    clear(list);
+    $('count').textContent = 'Loading…';
+    $('more').classList.add('hide');
+    var box = el('div', { className: 'skel' });
+    for (var i = 0; i < 4; i++) box.appendChild(el('div', { className: 'skel-row' }));
+    list.appendChild(box);
+  }
+
+  function emptyState(lead, detail, iconName) {
+    return el('div', { className: 'empty' }, [
+      icon(iconName || 'inbox', 34),
+      el('p', { className: 'lead', text: lead }),
+      detail ? el('p', { text: detail }) : null
+    ]);
+  }
+
+  function renderTasks() {
+    var list = $('list');
+    clear(list);
+
+    $('count').textContent = STATE.total
+      ? 'Showing ' + STATE.tasks.length + ' of ' + STATE.total +
+        (STATE.total === 1 ? ' task' : ' tasks')
+      : '';
+
+    if (!STATE.tasks.length) {
+      list.appendChild(STATE.search
+        ? emptyState('No matches', 'Nothing matches “' + STATE.search + '”.', 'search')
+        : emptyState('Nothing here yet',
+            STATE.scope === 'mine' ? 'Tasks assigned to you will show up here.'
+                                   : 'No tasks match this view.'));
+    } else {
+      STATE.tasks.forEach(function (t) { list.appendChild(taskCard(t)); });
+    }
+
+    $('more').classList.toggle('hide', STATE.tasks.length >= STATE.total);
+  }
+
+  function taskCard(t) {
+    var closed = t.status === 'Done' || t.status === 'Cancelled';
+
+    var meta = el('div', { className: 'meta' }, [
+      el('span', { className: 'who' }, [
+        avatar(t.assignee, t.assigneeName, true),
+        el('span', { text: t.assigneeName })
+      ]),
+      el('span', { className: 'pill ' + (STATUS_CLASS[t.status] || ''), text: t.status }),
+      el('span', { className: 'pill pri p-' + t.priority, text: t.priority })
+    ]);
+
+    if (t.due) {
+      var left = daysUntil(t.due);
+      var tone = closed ? '' : left < 0 ? ' due-over' : left <= 2 ? ' due-soon' : '';
+      var due = el('span', { className: 'pill' + tone }, [icon('calendar', 12)]);
+      due.appendChild(text((left < 0 && !closed ? 'overdue · ' : '') + dayLabel(t.due)));
+      meta.appendChild(due);
+    }
+
+    meta.appendChild(el('span', { className: 'dot-sep', text: '·' }));
+    meta.appendChild(el('span', { text: when(t.updatedAt) }));
+
+    if (!t.canEdit) {
+      meta.appendChild(el('span', {
+        className: 'pill', attrs: { title: 'You can view but not edit this task' }
+      }, [icon('lock', 12), text('view only')]));
+    }
+
+    var body = el('div', { className: 'body' }, [
+      el('div', { className: 'title', text: t.title })
+    ]);
+    if (t.details) {
+      body.appendChild(el('div', {
+        className: 'snip', text: t.details.replace(/\s+/g, ' ').trim()
+      }));
+    }
+    body.appendChild(meta);
+
+    return el('div', {
+      className: 'task p-' + t.priority + (closed ? ' closed' : ''),
+      attrs: { role: 'button', tabindex: '0' },
+      on: {
+        click: function () { openTask(t); },
+        keydown: function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openTask(t); }
+        }
+      }
+    }, [body]);
+  }
+
+  /* ============================================================== controls */
+
+  function wireControls() {
+    var timer = null;
+    $('q').addEventListener('input', function () {
+      STATE.search = $('q').value;
+      $('q-clear').classList.toggle('hide', !STATE.search);
+      clearTimeout(timer);
+      timer = setTimeout(function () { loadTasks(true); }, 250);
+    });
+
+    $('q-clear').addEventListener('click', function () {
+      $('q').value = '';
+      STATE.search = '';
+      $('q-clear').classList.add('hide');
+      $('q').focus();
+      loadTasks(true);
+    });
+
+    $('scope').addEventListener('click', function (ev) {
+      var btn = ev.target.closest('[data-scope]');
+      if (!btn || btn.dataset.scope === STATE.scope) return;
+      STATE.scope = btn.dataset.scope;
+      $('scope').querySelectorAll('[data-scope]').forEach(function (b) {
+        b.setAttribute('aria-selected', String(b === btn));
+      });
+      loadTasks(true);
+    });
+
+    $('more').addEventListener('click', function () { loadTasks(false); });
+    $('refresh').addEventListener('click', function () {
+      if (STATE.tab === 'activity') return loadActivity();
+      if (STATE.tab === 'tasks') { loadTasks(true); toast('Refreshed'); }
+    });
+
+    $('filters-open').addEventListener('click', openFilters);
+    $('fl-apply').addEventListener('click', function () {
+      STATE.filters = {
+        priority: $('fl-priority').value,
+        status: $('fl-status').value,
+        sort: $('fl-sort').value,
+        hideDone: $('fl-hidedone').checked
+      };
+      $('filters').close();
+      syncFilterUi();
+      loadTasks(true);
+    });
+    $('fl-reset').addEventListener('click', function () {
+      $('fl-priority').value = '';
+      $('fl-status').value = '';
+      $('fl-sort').value = 'recent';
+      $('fl-hidedone').checked = false;
+    });
+
+    // Desktop conveniences; harmless on touch.
+    document.addEventListener('keydown', function (ev) {
+      var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName);
+      var dialogOpen = !!document.querySelector('dialog[open]');
+      if (typing || dialogOpen || ev.metaKey || ev.ctrlKey) return;
+      if (ev.key === '/') { ev.preventDefault(); showTab('tasks'); $('q').focus(); }
+      if (ev.key === 'n' && STATE.boot.assignable.length) { ev.preventDefault(); openTask(null); }
+    });
+  }
+
+  function openFilters() {
+    $('fl-priority').value = STATE.filters.priority;
+    $('fl-status').value = STATE.filters.status;
+    $('fl-sort').value = STATE.filters.sort;
+    $('fl-hidedone').checked = STATE.filters.hideDone;
+    $('filters').showModal();
+  }
+
+  var CHIP_LABEL = {
+    priority: function (v) { return v + ' priority'; },
+    status: function (v) { return v; },
+    sort: function () { return 'By priority'; },
+    hideDone: function () { return 'Hiding closed'; }
+  };
+
+  function syncFilterUi() {
+    var active = activeFilters();
+    var badge = $('filter-count');
+    badge.textContent = active.length;
+    badge.classList.toggle('hide', !active.length);
+
+    var chips = $('active-chips');
+    clear(chips);
+    active.forEach(function (key) {
+      chips.appendChild(el('button', {
+        className: 'chip',
+        attrs: { type: 'button', 'aria-label': 'Remove filter' },
+        on: {
+          click: function () {
+            STATE.filters[key] = DEFAULTS[key];
+            syncFilterUi();
+            loadTasks(true);
+          }
+        }
+      }, [text(CHIP_LABEL[key](STATE.filters[key])), icon('x', 13)]));
+    });
+  }
+
+  /* ================================================================ editor */
+
+  function openTask(task) {
+    if (task && !task.canEdit) return viewTask(task);
+
+    var boot = STATE.boot;
+    $('dlg-title').textContent = task ? 'Edit task' : 'New task';
+    $('f-err').classList.add('hide');
+    $('form').dataset.id = task ? task.id : '';
+    $('f-title').value = task ? task.title : '';
+    $('f-details').value = task ? task.details : '';
+    $('f-priority').value = task ? task.priority : 'Medium';
+    $('f-status').value = task ? task.status : 'Open';
+    $('f-due').value = task ? dateValue(task.due) : '';
+
+    // Assignable = yourself + everyone under you. Keep the current assignee
+    // listed even when they sit outside that set, so editing a task you
+    // inherited does not silently reassign it.
+    var sel = $('f-assignee');
+    clear(sel);
+    var choices = boot.assignable.slice();
+    if (task && choices.indexOf(task.assignee) === -1) choices.unshift(task.assignee);
+    choices.forEach(function (email) {
+      sel.appendChild(el('option', {
+        attrs: { value: email },
+        text: memberName(email) + (email === boot.me.email ? ' (me)' : '')
+      }));
+    });
+    sel.value = task ? task.assignee : boot.me.email;
+    sel.disabled = choices.length < 2;
+
+    $('f-stamp').textContent = task
+      ? 'Created ' + when(task.createdAt) + ' by ' + memberName(task.createdBy) +
+        ' · last updated ' + when(task.updatedAt) + ' by ' + memberName(task.updatedBy)
+      : 'The update timestamp is set automatically when you save.';
+    $('f-delete').classList.toggle('hide', !task);
+
+    $('editor').showModal();
+    if (!task) setTimeout(function () { $('f-title').focus(); }, 120);
+  }
+
+  function viewTask(task) {
+    $('v-title').textContent = task.title;
+
+    var meta = $('v-meta');
+    clear(meta);
+    meta.appendChild(el('span', { className: 'who' }, [
+      avatar(task.assignee, task.assigneeName, true),
+      el('span', { text: task.assigneeName })
+    ]));
+    meta.appendChild(el('span', {
+      className: 'pill ' + (STATUS_CLASS[task.status] || ''), text: task.status
+    }));
+    meta.appendChild(el('span', {
+      className: 'pill pri p-' + task.priority, text: task.priority + ' priority'
+    }));
+    if (task.due) {
+      meta.appendChild(el('span', { className: 'pill', text: 'due ' + dayLabel(task.due) }));
+    }
+    meta.appendChild(el('span', { className: 'pill' }, [icon('lock', 12), text('view only')]));
+
+    var details = $('v-details');
+    details.textContent = task.details || 'No details were added.';
+    details.classList.toggle('none', !task.details);
+
+    $('v-stamp').textContent =
+      'Created ' + longWhen(task.createdAt) + ' by ' + memberName(task.createdBy) +
+      '\nLast updated ' + longWhen(task.updatedAt) + ' by ' + memberName(task.updatedBy) +
+      '\nOnly ' + task.assigneeName + ' and their reporting officers can edit this task.';
+
+    $('viewer').showModal();
+  }
+
+  function busy(on) {
+    $('f-save').disabled = on;
+    $('f-delete').disabled = on;
+    $('f-save').textContent = on ? 'Saving…' : 'Save';
+  }
+
+  function formError(message) {
+    $('f-err').textContent = message;
+    $('f-err').classList.remove('hide');
+  }
+
+  function wireEditor() {
+    $('new').addEventListener('click', function () { openTask(null); });
+
+    $('form').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var payload = {
+        id: $('form').dataset.id,
+        title: $('f-title').value,
+        details: $('f-details').value,
+        assignee: $('f-assignee').value,
+        priority: $('f-priority').value,
+        status: $('f-status').value,
+        due: $('f-due').value
+      };
+      if (!payload.title.trim()) return formError('A title is required.');
+
+      var creating = !payload.id;
+      busy(true);
+      call('saveTask', payload).then(function () {
+        $('editor').close();
+        toast(creating ? 'Task created' : 'Changes saved');
+        return loadTasks(true);
+      }).catch(function (e) {
+        formError(e.message);
+      }).then(function () { busy(false); });
+    });
+
+    $('f-delete').addEventListener('click', function () {
+      var id = $('form').dataset.id;
+      if (!id) return;
+      $('c-text').textContent = '“' + $('f-title').value +
+        '” will be removed from the list. The Activity log keeps a record of the deletion.';
+      $('confirm').showModal();
+    });
+
+    $('c-no').addEventListener('click', function () { $('confirm').close(); });
+    $('c-yes').addEventListener('click', function () {
+      var id = $('form').dataset.id;
+      $('confirm').close();
+      busy(true);
+      call('deleteTask', id).then(function () {
+        $('editor').close();
+        toast('Task deleted');
+        return loadTasks(true);
+      }).catch(function (e) {
+        formError(e.message);
+      }).then(function () { busy(false); });
+    });
+  }
+
+  /* ================================================================== team */
+
+  function renderTeam() {
+    var members = STATE.boot.members || [];
+    var box = $('tree');
+    clear(box);
+
+    if (!members.length) {
+      box.appendChild(emptyState('No members yet',
+        'Add one row per person on the Members tab of the sheet.', 'team'));
+      return;
+    }
+
+    var known = {};
+    var kids = {};
+    members.forEach(function (m) { known[m.email] = m; });
+    members.forEach(function (m) {
+      var boss = m.reportsTo && known[m.reportsTo] ? m.reportsTo : '';
+      (kids[boss] = kids[boss] || []).push(m);
+    });
+
+    function row(m, depth) {
+      var reports = (kids[m.email] || []).length;
+      var label = m.name + (m.email === STATE.boot.me.email ? ' (me)' : '');
+      return el('div', {
+        className: 'node' + (m.active ? '' : ' off'),
+        style: 'padding-left:' + (depth * 20) + 'px'
+      }, [
+        depth ? el('span', { className: 'rail', text: '└' }) : null,
+        avatar(m.email, m.name),
+        el('div', { style: 'flex:1;min-width:0' }, [
+          el('div', { className: 'n', text: label + (m.active ? '' : ' — inactive') }),
+          el('div', { className: 'e', text: m.email })
+        ]),
+        reports ? el('span', {
+          className: 'pill', text: reports + (reports === 1 ? ' report' : ' reports')
+        }) : null
+      ]);
+    }
+
+    var seen = {};
+    (function walk(parent, depth) {
+      (kids[parent] || []).forEach(function (m) {
+        if (seen[m.email]) return;                 // guards a bad loop in the sheet
+        seen[m.email] = true;
+        box.appendChild(row(m, depth));
+        walk(m.email, depth + 1);
+      });
+    })('', 0);
+
+    // Anyone in a reporting cycle (A reports to B, B reports to A) is never
+    // reached from the top, and silently vanishing from the chart is how such a
+    // typo survives in the sheet for months. List them where they can be seen.
+    var stranded = members.filter(function (m) { return !seen[m.email]; });
+    if (stranded.length) {
+      box.appendChild(el('div', { className: 'subhead', text: 'Not in the reporting chart' }));
+      box.appendChild(el('div', {
+        className: 'hint',
+        text: 'Their ReportsTo forms a loop in the sheet, so they have no path to the top.'
+      }));
+      stranded.forEach(function (m) { box.appendChild(row(m, 0)); });
+    }
+  }
+
+  /* ============================================================== activity */
+
+  function loadActivity() {
+    var box = $('acts');
+    clear(box);
+    var skel = el('div', { className: 'skel', style: 'padding-top:14px' });
+    for (var i = 0; i < 4; i++) {
+      skel.appendChild(el('div', { className: 'skel-row', style: 'height:56px' }));
+    }
+    box.appendChild(skel);
+
+    call('listActivity', 60).then(function (rows) {
+      clear(box);
+      if (!rows.length) {
+        box.appendChild(emptyState('Nothing logged yet',
+          'Creating or editing a task will show up here.', 'activity'));
+        return;
+      }
+      rows.forEach(function (r) {
+        var line = el('div', { className: 'line' }, [
+          el('b', { text: r.actorName }),
+          text(' ' + r.action.toLowerCase() + ' '),
+          el('b', { text: '“' + r.taskTitle + '”' })
+        ]);
+        box.appendChild(el('div', { className: 'act' }, [
+          avatar(r.actor, r.actorName, true),
+          el('div', { className: 'body' }, [
+            line,
+            r.summary ? el('div', { className: 'sum', text: r.summary }) : null,
+            el('div', { className: 't', text: when(r.at) })
+          ])
+        ]));
+      });
+    }).catch(function (e) {
+      clear(box);
+      box.appendChild(emptyState('Could not load the activity log', e.message, 'info'));
+    });
+  }
+
+  /* ================================================================== boot */
+
+  function showNotice(message) {
+    var box = $('notice');
+    clear(box);
+    box.appendChild(el('div', { className: 'banner' }, [
+      icon('info', 18), el('div', { text: message })
+    ]));
+  }
+
+  function fatal(err) {
+    clear($('list'));
+    $('count').textContent = '';
+    $('list').appendChild(emptyState('Cannot start', err.message, 'info'));
+  }
+
+  buildChrome();
+
+  call('bootstrap').then(function (boot) {
+    STATE.boot = boot;
+
+    var chip = $('me-chip');
+    chip.textContent = initials(boot.me.name);
+    chip.style.background = 'hsl(' + hue(boot.me.email) + ' 42% 44%)';
+    chip.title = boot.me.name + ' · ' + boot.me.email + (boot.me.isAdmin ? ' (owner)' : '');
+
+    fillSelect($('fl-priority'), boot.priorities);
+    fillSelect($('fl-status'), boot.statuses);
+    fillSelect($('f-priority'), boot.priorities, 'Medium');
+    fillSelect($('f-status'), boot.statuses, 'Open');
+
+    if (!boot.me.known) {
+      showNotice('You (' + boot.me.email + ') are not on the Members tab yet, so you can ' +
+                 'browse everything but cannot be assigned tasks. Ask the owner to add you.');
+      STATE.scope = 'all';
+      $('scope').querySelectorAll('[data-scope]').forEach(function (b) {
+        b.setAttribute('aria-selected', String(b.dataset.scope === 'all'));
+      });
+    }
+
+    wireControls();
+    wireEditor();
+    syncFilterUi();
+    syncFab();
+    loadTasks(true);
+  }).catch(fatal);
+})();
+</script>

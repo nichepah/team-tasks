@@ -1,0 +1,8 @@
+# Build artefacts — regenerate with test/preview.sh and test/run.sh
+test/.preview.html
+test/.bundle.js
+test/.layout-probe.html
+
+# Per-machine Claude Code permissions
+**/.claude/settings.local.json
+**/.claude/settings.local.json.tmp.*
